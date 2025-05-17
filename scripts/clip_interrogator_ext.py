@@ -4,6 +4,7 @@ import open_clip
 import os
 import torch
 import base64
+from pathlib import Path
 
 from PIL import Image
 
@@ -19,6 +20,8 @@ from fastapi.exceptions import HTTPException
 from io import BytesIO
 
 __version__ = "0.2.1"
+
+SPECIAL_MODEL = "OpenGVLab/InternVL3-14B"
 
 ci = None
 low_vram = False
@@ -56,22 +59,48 @@ class BatchWriter:
             self.file.close()
 
 
+def ensure_internvl3_model() -> Path | None:
+    """Download InternVL3-14B model from HuggingFace if needed."""
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception:
+        print("huggingface_hub is required to download InternVL3-14B model")
+        return None
+
+    model_dir = Path("models") / "InternVL3-14B"
+    if not model_dir.exists() or not any(model_dir.iterdir()):
+        print("Downloading InternVL3-14B model from HuggingFace...")
+        snapshot_download(
+            repo_id=SPECIAL_MODEL,
+            local_dir=str(model_dir),
+            local_dir_use_symlinks=False,
+        )
+    return model_dir
+
+
 def load(clip_model_name):
     global ci
+
+    if clip_model_name == SPECIAL_MODEL:
+        ensure_internvl3_model()
+        resolved_name = f"hf-hub:{SPECIAL_MODEL}"
+    else:
+        resolved_name = clip_model_name
+
     if ci is None:
         print(f"Loading CLIP Interrogator {clip_interrogator.__version__}...")
 
         config = Config(
             device=devices.get_optimal_device(),
-            cache_path = 'models/clip-interrogator',
-            clip_model_name=clip_model_name,
+            cache_path='models/clip-interrogator',
+            clip_model_name=resolved_name,
         )
         if low_vram:
             config.apply_low_vram_defaults()
         ci = Interrogator(config)
 
-    if clip_model_name != ci.config.clip_model_name:
-        ci.config.clip_model_name = clip_model_name
+    if resolved_name != ci.config.clip_model_name:
+        ci.config.clip_model_name = resolved_name
         ci.load_clip_model()
 
 def unload():
@@ -167,7 +196,10 @@ def about_tab():
         gr.Markdown(vram_info)
 
 def get_models():
-    return ['/'.join(x) for x in open_clip.list_pretrained()]
+    models = ['/'.join(x) for x in open_clip.list_pretrained()]
+    if SPECIAL_MODEL not in models:
+        models.append(SPECIAL_MODEL)
+    return models
 
 def analyze_tab():
     with gr.Column():
@@ -340,7 +372,10 @@ class InterrogatorPromptRequest(InterrogatorAnalyzeRequest):
 def mount_interrogator_api(_: gr.Blocks, app: FastAPI):
     @app.get("/interrogator/models")
     async def get_models():
-        return ["/".join(x) for x in open_clip.list_pretrained()]
+        models = ["/".join(x) for x in open_clip.list_pretrained()]
+        if SPECIAL_MODEL not in models:
+            models.append(SPECIAL_MODEL)
+        return models
 
     @app.post("/interrogator/prompt")
     async def get_prompt(analyzereq: InterrogatorPromptRequest):
